@@ -1,12 +1,14 @@
 import sys
 import numpy as np
-from pycalphad import equilibrium, variables as v
+from pycalphad import equilibrium, Model, variables as v
 from pycalphad.codegen.callables import build_phase_records
 from pycalphad.core.calculate import _sample_phase_constitution
 from pycalphad.core.utils import instantiate_models, unpack_components, filter_phases, point_sample
 from .solidification_result import SolidificationResult
 from .utils import local_sample, get_phase_amounts
 from .ordering import create_ordering_records, rename_disordered_phases
+from symengine import Piecewise
+
 
 
 def is_converged(eq):
@@ -57,7 +59,7 @@ def _update_points(eq, points_dict, dof_dict, local_pdens=0, verbose=False):
 
 def simulate_scheil_solidification(dbf, comps, phases, composition,
                                    start_temperature, step_temperature=1.0,
-                                   liquid_phase_name='LIQUID', eq_kwargs=None,
+                                   liquid_phase_name='LIQUID', model=None, eq_kwargs=None,
                                    stop=0.0001, verbose=False, adaptive=True):
     """Perform a Scheil-Gulliver solidification simulation.
 
@@ -97,7 +99,19 @@ def simulate_scheil_solidification(dbf, comps, phases, composition,
     T_STEP_ORIG = step_temperature
     phases = filter_phases(dbf, unpack_components(dbf, comps), phases)
     ordering_records = create_ordering_records(dbf, comps, phases)
-    models = instantiate_models(dbf, comps, phases)
+    if verbose:
+        print('Assigning models')
+    if model == None:
+        if verbose:
+            print('standard models')
+        models = instantiate_models(dbf, comps, phases)
+    else:
+        if verbose:
+            print('Custom Models initiated')
+        comps2=unpack_components(dbf,comps)
+        models = instantiate_models(dbf, comps2, filter_phases(dbf, comps2, phases), model=CustomModel)
+        if verbose:
+            print('Custom models completed')
     if verbose:
         print('building PhaseRecord objects... ', end='')
     phase_records = build_phase_records(dbf, comps, phases, [v.N, v.P, v.T], models)
@@ -223,10 +237,28 @@ def simulate_scheil_solidification(dbf, comps, phases, composition,
 
     return SolidificationResult(x_liquid, fraction_solid, temperatures, phase_amounts, converged, "scheil")
 
+def unwrap_piecewise(graph):
+    replace_dict = {}
+    for atom in graph.atoms(Piecewise):
+        args = atom.args
+        # Unwrap temperature-dependent piecewise with zero-defaults
+        if len(args) == 4 and args[2] == 0 and args[3] == True and atom.args[1].free_symbols == {v.T}:
+            replace_dict[atom] = args[0]
+        elif len(args) == 4 and args[0] == 0 and args[2] == 0:
+            replace_dict[atom] = 0
+    return graph.xreplace(replace_dict)
+
+class CustomModel(Model):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, value in self.models.items():
+            for _ in range(5):
+                self.models[name] = unwrap_piecewise(self.models[name])
+
 
 def simulate_equilibrium_solidification(dbf, comps, phases, composition,
                                         start_temperature, step_temperature=1.0,
-                                        liquid_phase_name='LIQUID', adaptive=True, eq_kwargs=None,
+                                        liquid_phase_name='LIQUID', adaptive=True, model=None, eq_kwargs=None,
                                         binary_search_tol=0.1,
                                         verbose=False):
     """
@@ -264,7 +296,20 @@ def simulate_equilibrium_solidification(dbf, comps, phases, composition,
     filtered_disordered_phases = {ord_rec.disordered_phase_name for ord_rec in ordering_records}
     solid_phases = sorted((set(phases) | filtered_disordered_phases) - {liquid_phase_name})
     independent_comps = sorted([str(comp)[2:] for comp in composition.keys()])
-    models = instantiate_models(dbf, comps, phases)
+    if verbose:
+        print('Assigning models')
+    if model == None:
+        if verbose:
+            print('standard models')
+        models = instantiate_models(dbf, comps, phases)
+    else:
+        if verbose:
+            print('Custom Models initiated')
+        comps2=unpack_components(dbf,comps)
+        models = instantiate_models(dbf, comps2, filter_phases(dbf, comps2, phases), model=CustomModel)
+        if verbose:
+            print('Custom models completed')
+
     if verbose:
         print('building PhaseRecord objects... ', end='')
     phase_records = build_phase_records(dbf, comps, phases, [v.N, v.P, v.T], models)
